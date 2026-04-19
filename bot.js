@@ -1,23 +1,33 @@
 require('dotenv').config();
 
-const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
-const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
+const axios = require('axios');
+const qrcode = require('qrcode-terminal');
+const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
 
 const { getSubjects, getFiles, searchFile, getPublicUrl } = require('./supabase');
 
-// ── Keep-alive HTTP server for Render ──────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
+// Basic app for Render health check
+// ─────────────────────────────────────────────────────────────────────
 const app = express();
 
-app.get('/', (req, res) => res.send('✅ Syllabyte bot is running!'));
-
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`🌐 HTTP server listening on port ${process.env.PORT || 3000}`);
+app.get('/', (_req, res) => {
+  res.send('✅ Syllabyte bot is running!');
 });
-// ───────────────────────────────────────────────────────────────────
 
-const TRIGGER = (process.env.TRIGGER_WORD || 'syllabyte').toLowerCase();
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 HTTP server listening on port ${PORT}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers / config
+// ─────────────────────────────────────────────────────────────────────
+const TRIGGER = (process.env.TRIGGER_WORD || 'syllabyte').toLowerCase().trim();
+
 const ALLOWED = (process.env.ALLOWED_CHAT_IDS || '')
   .split(',')
   .map((s) => s.trim())
@@ -26,17 +36,43 @@ const ALLOWED = (process.env.ALLOWED_CHAT_IDS || '')
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-// ── Chrome path for Render ─────────────────────────────────────────
 const isRender = !!process.env.RENDER;
-const CHROME_PATH = '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
+const AUTH_PATH = isRender
+  ? '/opt/render/project/src/.wwebjs_auth'
+  : path.join(process.cwd(), '.wwebjs_auth');
+
+const CHROME_PATH = process.env.CHROME_PATH || '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
 
 console.log(`🖥️ Running on: ${isRender ? 'Render' : 'Local'}`);
 if (isRender) console.log(`🔍 Using Chrome at: ${CHROME_PATH}`);
+console.log(`🔐 Auth path: ${AUTH_PATH}`);
 
-// ── WhatsApp Client ────────────────────────────────────────────────
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Optional: only use this if you explicitly set RESET_WA_SESSION=true
+if (process.env.RESET_WA_SESSION === 'true') {
+  try {
+    if (fs.existsSync(AUTH_PATH)) {
+      fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+      console.log('🧹 Removed existing WhatsApp auth session.');
+    }
+  } catch (err) {
+    console.warn('⚠️ Could not clear auth session:', err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// WhatsApp client
+// ─────────────────────────────────────────────────────────────────────
+let qrShownCount = 0;
+
 const client = new Client({
   authStrategy: new LocalAuth({
-    dataPath: isRender ? '/opt/render/project/src/.wwebjs_auth' : './.wwebjs_auth',
+    dataPath: AUTH_PATH,
   }),
   puppeteer: {
     headless: true,
@@ -52,17 +88,30 @@ const client = new Client({
       '--no-zygote',
       '--disable-gpu',
       '--single-process',
+      '--disable-extensions',
     ],
   },
+  takeoverOnConflict: true,
+  takeoverTimeoutMs: 0,
+  qrMaxRetries: 0,
+  restartOnAuthFail: true,
 });
 
 process.setMaxListeners(0);
 
-// ───────────────────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────────────────────
+// WhatsApp events
+// ─────────────────────────────────────────────────────────────────────
 client.on('qr', (qr) => {
-  console.log('📱 QR received. Scan it from the logs below:');
+  qrShownCount += 1;
+
+  console.log(`\n📱 QR received (#${qrShownCount}). Scan the latest one from logs immediately:\n`);
   qrcode.generate(qr, { small: true });
+  console.log('\n⏱️ QR expires fast. Scan the newest QR only.\n');
+});
+
+client.on('authenticated', () => {
+  console.log('🔐 WhatsApp authenticated.');
 });
 
 client.on('ready', () => {
@@ -75,17 +124,21 @@ client.on('auth_failure', (msg) => {
 
 client.on('disconnected', async (reason) => {
   console.warn('⚠️ Bot disconnected:', reason);
+
   try {
     await client.destroy();
   } catch {}
+
   setTimeout(() => {
-    client.initialize().catch((err) => console.error('Re-init failed:', err));
+    client.initialize().catch((err) => {
+      console.error('❌ Re-init failed:', err);
+    });
   }, 5000);
 });
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
+// ─────────────────────────────────────────────────────────────────────
+// Gemini helpers
+// ─────────────────────────────────────────────────────────────────────
 let cachedModels = null;
 
 async function listModels() {
@@ -272,6 +325,9 @@ async function sendPdf(message, result) {
   return message.reply(media);
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Message handling
+// ─────────────────────────────────────────────────────────────────────
 client.on('message', async (message) => {
   if (!ALLOWED.includes(message.from)) return;
 
@@ -280,7 +336,8 @@ client.on('message', async (message) => {
   try {
     if (!msg.toLowerCase().startsWith(TRIGGER)) return;
 
-    msg = msg.replace(new RegExp(`^${TRIGGER}`, 'i'), '').trim();
+    const triggerRegex = new RegExp(`^${escapeRegex(TRIGGER)}`, 'i');
+    msg = msg.replace(triggerRegex, '').trim();
 
     if (!msg) {
       return message.reply(
@@ -289,7 +346,7 @@ client.on('message', async (message) => {
     }
 
     await message.react('👀');
-    await delay(200);
+    await sleep(200);
     await message.react('⏳');
 
     const ai = await analyze(msg);
@@ -414,7 +471,9 @@ client.on('message', async (message) => {
   }
 });
 
-// Delay initialize for Render cold start
+// ─────────────────────────────────────────────────────────────────────
+// Start bot with a small Render delay
+// ─────────────────────────────────────────────────────────────────────
 setTimeout(() => {
   client.initialize().catch((err) => {
     console.error('❌ Client initialize failed:', err);
