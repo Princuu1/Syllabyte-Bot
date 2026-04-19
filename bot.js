@@ -51,8 +51,9 @@ const client = new Client({
 // ───────────────────────────────────────────────────────────────────
 
 client.on('qr', qr => {
-  console.log('📱 Scan this QR code with your WhatsApp:');
-  qrcode.generate(qr, { small: true });
+  console.log('📱 QR RECEIVED — open this URL in your browser to scan:');
+  console.log(`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
+  console.log('─────────────────────────────────────────');
 });
 
 client.on('ready', () => console.log('✅ Bot Ready'));
