@@ -10,7 +10,7 @@ const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
 const { getSubjects, getFiles, searchFile, getPublicUrl } = require('./supabase');
 
 // ─────────────────────────────────────────────────────────────────────
-// Basic app for Render health check
+// Health server
 // ─────────────────────────────────────────────────────────────────────
 const app = express();
 
@@ -24,7 +24,7 @@ app.listen(PORT, () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Helpers / config
+// Config
 // ─────────────────────────────────────────────────────────────────────
 const TRIGGER = (process.env.TRIGGER_WORD || 'syllabyte').toLowerCase().trim();
 
@@ -41,7 +41,9 @@ const AUTH_PATH = isRender
   ? '/opt/render/project/src/.wwebjs_auth'
   : path.join(process.cwd(), '.wwebjs_auth');
 
-const CHROME_PATH = process.env.CHROME_PATH || '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
+const CHROME_PATH =
+  process.env.CHROME_PATH ||
+  '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
 
 console.log(`🖥️ Running on: ${isRender ? 'Render' : 'Local'}`);
 if (isRender) console.log(`🔍 Using Chrome at: ${CHROME_PATH}`);
@@ -53,7 +55,7 @@ function escapeRegex(text) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Optional: only use this if you explicitly set RESET_WA_SESSION=true
+// Optional manual reset only if you explicitly set RESET_WA_SESSION=true
 if (process.env.RESET_WA_SESSION === 'true') {
   try {
     if (fs.existsSync(AUTH_PATH)) {
@@ -68,7 +70,8 @@ if (process.env.RESET_WA_SESSION === 'true') {
 // ─────────────────────────────────────────────────────────────────────
 // WhatsApp client
 // ─────────────────────────────────────────────────────────────────────
-let qrShownCount = 0;
+let printedQrOnce = false;
+let reconnecting = false;
 
 const client = new Client({
   authStrategy: new LocalAuth({
@@ -93,21 +96,21 @@ const client = new Client({
   },
   takeoverOnConflict: true,
   takeoverTimeoutMs: 0,
-  qrMaxRetries: 0,
   restartOnAuthFail: true,
 });
 
 process.setMaxListeners(0);
 
 // ─────────────────────────────────────────────────────────────────────
-// WhatsApp events
+// Events
 // ─────────────────────────────────────────────────────────────────────
 client.on('qr', (qr) => {
-  qrShownCount += 1;
+  if (printedQrOnce) return;
+  printedQrOnce = true;
 
-  console.log(`\n📱 QR received (#${qrShownCount}). Scan the latest one from logs immediately:\n`);
+  console.log('\n📱 Scan this QR once from the logs right now:\n');
   qrcode.generate(qr, { small: true });
-  console.log('\n⏱️ QR expires fast. Scan the newest QR only.\n');
+  console.log('\n⏱️ If scan fails, restart the app and use the new QR.\n');
 });
 
 client.on('authenticated', () => {
@@ -125,14 +128,19 @@ client.on('auth_failure', (msg) => {
 client.on('disconnected', async (reason) => {
   console.warn('⚠️ Bot disconnected:', reason);
 
+  if (reconnecting) return;
+  reconnecting = true;
+
   try {
     await client.destroy();
   } catch {}
 
   setTimeout(() => {
-    client.initialize().catch((err) => {
-      console.error('❌ Re-init failed:', err);
-    });
+    client.initialize()
+      .catch((err) => console.error('❌ Re-init failed:', err))
+      .finally(() => {
+        reconnecting = false;
+      });
   }, 5000);
 });
 
@@ -472,7 +480,7 @@ client.on('message', async (message) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Start bot with a small Render delay
+// Start bot
 // ─────────────────────────────────────────────────────────────────────
 setTimeout(() => {
   client.initialize().catch((err) => {
