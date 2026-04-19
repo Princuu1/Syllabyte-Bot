@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const axios = require('axios');
 const express = require('express');
 
@@ -9,7 +10,76 @@ const { getSubjects, getFiles, searchFile, getPublicUrl } = require('./supabase'
 
 // ── Keep-alive HTTP server for Render ──────────────────────────────
 const app = express();
+let lastQR = null;
+
 app.get('/', (req, res) => res.send('✅ Syllabyte bot is running!'));
+
+// Password protected QR page
+app.get('/qr', (req, res) => {
+  const { pass } = req.query;
+
+  // No password = show login form
+  if (!pass) {
+    return res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
+        <h2>🔐 Syllabyte Admin</h2>
+        <form method="GET" action="/qr">
+          <input
+            type="password"
+            name="pass"
+            placeholder="Enter password"
+            style="padding:10px;font-size:16px;border-radius:8px;border:none;display:block;margin:auto;margin-bottom:15px;width:250px"
+          />
+          <button
+            type="submit"
+            style="padding:10px 30px;font-size:16px;background:#25D366;color:white;border:none;border-radius:8px;cursor:pointer"
+          >
+            Access QR
+          </button>
+        </form>
+      </body></html>
+    `);
+  }
+
+  // Wrong password
+  if (pass !== process.env.QR_PASSWORD) {
+    return res.status(401).send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
+        <h2>❌ Wrong password</h2>
+        <a href="/qr" style="color:#25D366">Try again</a>
+      </body></html>
+    `);
+  }
+
+  // Correct password but no QR (already connected)
+  if (!lastQR) {
+    return res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
+        <h2>✅ Bot is already connected!</h2>
+        <p>No QR needed right now.</p>
+        <br/>
+        <a href="/qr?pass=${pass}" style="color:#25D366">🔄 Refresh</a>
+      </body></html>
+    `);
+  }
+
+  // Show QR image
+  QRCode.toDataURL(lastQR).then(qrImage => {
+    res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
+        <h2>📱 Scan with WhatsApp</h2>
+        <p style="color:#aaa">WhatsApp → Linked Devices → Link a Device</p>
+        <img src="${qrImage}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block" />
+        <p style="color:#ff9900">⚠️ QR expires in ~20 seconds</p>
+        <a href="/qr?pass=${pass}" 
+           style="display:inline-block;margin-top:10px;padding:10px 25px;background:#25D366;color:white;border-radius:8px;text-decoration:none">
+          🔄 Refresh QR
+        </a>
+      </body></html>
+    `);
+  });
+});
+
 app.listen(process.env.PORT || 3000, () =>
   console.log(`🌐 HTTP server listening on port ${process.env.PORT || 3000}`)
 );
@@ -24,7 +94,7 @@ const ALLOWED = (process.env.ALLOWED_CHAT_IDS || '')
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-// ── Puppeteer args for Linux (required on Render) ──────────────────
+// ── Puppeteer config ───────────────────────────────────────────────
 const isRender = !!process.env.RENDER;
 
 const client = new Client({
@@ -35,7 +105,7 @@ const client = new Client({
     headless: true,
     executablePath: isRender
       ? '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome'
-      : undefined, // local: puppeteer finds it automatically
+      : undefined,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -47,16 +117,20 @@ const client = new Client({
       '--disable-gpu',
     ],
   },
-});;
+});
 // ───────────────────────────────────────────────────────────────────
 
-client.on('qr', qr => {
-  console.log('📱 QR RECEIVED — open this URL in your browser to scan:');
-  console.log(`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
-  console.log('─────────────────────────────────────────');
+client.on('qr', (qr) => {
+  lastQR = qr; // store for /qr page
+  console.log('📱 New QR received — visit /qr page to scan');
+  // also print terminal QR as fallback
+  qrcode.generate(qr, { small: true });
 });
 
-client.on('ready', () => console.log('✅ Bot Ready'));
+client.on('ready', () => {
+  lastQR = null; // clear QR once connected
+  console.log('✅ Bot Ready');
+});
 
 client.on('auth_failure', (msg) => {
   console.error('❌ Auth failed:', msg);
@@ -64,7 +138,6 @@ client.on('auth_failure', (msg) => {
 
 client.on('disconnected', (reason) => {
   console.warn('⚠️ Bot disconnected:', reason);
-  // Auto reconnect
   client.initialize();
 });
 
