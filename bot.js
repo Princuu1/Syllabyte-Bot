@@ -2,7 +2,6 @@ require('dotenv').config();
 
 const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const QRCode = require('qrcode');
 const axios = require('axios');
 const express = require('express');
 
@@ -10,74 +9,12 @@ const { getSubjects, getFiles, searchFile, getPublicUrl } = require('./supabase'
 
 // ── Keep-alive HTTP server for Render ──────────────────────────────
 const app = express();
-let lastQR = null;
 
 app.get('/', (req, res) => res.send('✅ Syllabyte bot is running!'));
 
-app.get('/qr', (req, res) => {
-  const { pass } = req.query;
-
-  if (!pass) {
-    return res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
-        <h2>🔐 Syllabyte Admin</h2>
-        <form method="GET" action="/qr">
-          <input
-            type="password"
-            name="pass"
-            placeholder="Enter password"
-            style="padding:10px;font-size:16px;border-radius:8px;border:none;display:block;margin:auto;margin-bottom:15px;width:250px"
-          />
-          <button
-            type="submit"
-            style="padding:10px 30px;font-size:16px;background:#25D366;color:white;border:none;border-radius:8px;cursor:pointer"
-          >
-            Access QR
-          </button>
-        </form>
-      </body></html>
-    `);
-  }
-
-  if (pass !== process.env.QR_PASSWORD) {
-    return res.status(401).send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
-        <h2>❌ Wrong password</h2>
-        <a href="/qr" style="color:#25D366">Try again</a>
-      </body></html>
-    `);
-  }
-
-  if (!lastQR) {
-    return res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
-        <h2>✅ Bot is already connected!</h2>
-        <p>No QR needed right now.</p>
-        <br/>
-        <a href="/qr?pass=${pass}" style="color:#25D366">🔄 Refresh</a>
-      </body></html>
-    `);
-  }
-
-  QRCode.toDataURL(lastQR).then(qrImage => {
-    res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
-        <h2>📱 Scan with WhatsApp</h2>
-        <p style="color:#aaa">WhatsApp → Linked Devices → Link a Device</p>
-        <img src="${qrImage}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block" />
-        <p style="color:#ff9900">⚠️ QR expires in ~20 seconds</p>
-        <a href="/qr?pass=${pass}"
-           style="display:inline-block;margin-top:10px;padding:10px 25px;background:#25D366;color:white;border-radius:8px;text-decoration:none">
-          🔄 Refresh QR
-        </a>
-      </body></html>
-    `);
-  });
+app.listen(process.env.PORT || 3000, () => {
+  console.log(`🌐 HTTP server listening on port ${process.env.PORT || 3000}`);
 });
-
-app.listen(process.env.PORT || 3000, () =>
-  console.log(`🌐 HTTP server listening on port ${process.env.PORT || 3000}`)
-);
 // ───────────────────────────────────────────────────────────────────
 
 const TRIGGER = (process.env.TRIGGER_WORD || 'syllabyte').toLowerCase();
@@ -89,7 +26,7 @@ const ALLOWED = (process.env.ALLOWED_CHAT_IDS || '')
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-// ── Chrome path — from your logs we know exact path ───────────────
+// ── Chrome path for Render ─────────────────────────────────────────
 const isRender = !!process.env.RENDER;
 const CHROME_PATH = '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
 
@@ -99,11 +36,13 @@ if (isRender) console.log(`🔍 Using Chrome at: ${CHROME_PATH}`);
 // ── WhatsApp Client ────────────────────────────────────────────────
 const client = new Client({
   authStrategy: new LocalAuth({
-    dataPath: isRender ? '/tmp/.wwebjs_auth' : './.wwebjs_auth',
+    dataPath: isRender ? '/opt/render/project/src/.wwebjs_auth' : './.wwebjs_auth',
   }),
   puppeteer: {
     headless: true,
     executablePath: isRender ? CHROME_PATH : undefined,
+    protocolTimeout: 180000,
+    timeout: 180000,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -112,19 +51,21 @@ const client = new Client({
       '--no-first-run',
       '--no-zygote',
       '--disable-gpu',
+      '--single-process',
     ],
   },
 });
+
+process.setMaxListeners(0);
+
 // ───────────────────────────────────────────────────────────────────
 
 client.on('qr', (qr) => {
-  lastQR = qr;
-  console.log('📱 New QR received — visit /qr page to scan');
+  console.log('📱 QR received. Scan it from the logs below:');
   qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
-  lastQR = null;
   console.log('✅ Bot Ready');
 });
 
@@ -132,13 +73,18 @@ client.on('auth_failure', (msg) => {
   console.error('❌ Auth failed:', msg);
 });
 
-client.on('disconnected', (reason) => {
+client.on('disconnected', async (reason) => {
   console.warn('⚠️ Bot disconnected:', reason);
-  client.initialize();
+  try {
+    await client.destroy();
+  } catch {}
+  setTimeout(() => {
+    client.initialize().catch((err) => console.error('Re-init failed:', err));
+  }, 5000);
 });
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let cachedModels = null;
 
@@ -201,9 +147,10 @@ async function geminiGenerate(prompt, jsonMode = false) {
           timeout: 30000,
         });
 
-        const text = res.data?.candidates?.[0]?.content?.parts
-          ?.map((p) => p.text || '')
-          .join('') || '';
+        const text =
+          res.data?.candidates?.[0]?.content?.parts
+            ?.map((p) => p.text || '')
+            .join('') || '';
 
         return text;
       } catch (err) {
@@ -336,7 +283,9 @@ client.on('message', async (message) => {
     msg = msg.replace(new RegExp(`^${TRIGGER}`, 'i'), '').trim();
 
     if (!msg) {
-      return message.reply('👋 Ask me like:\n• syllabyte beee module 5\n• syllabyte beee pyq\n• syllabyte show subjects');
+      return message.reply(
+        '👋 Ask me like:\n• syllabyte beee module 5\n• syllabyte beee pyq\n• syllabyte show subjects'
+      );
     }
 
     await message.react('👀');
@@ -348,21 +297,25 @@ client.on('message', async (message) => {
 
     if (!ai) {
       await message.react('❌');
-      return message.reply(await chatReply({
-        reason: 'unknown',
-        userMessage: msg,
-        availableSubjects: subjects,
-      }));
+      return message.reply(
+        await chatReply({
+          reason: 'unknown',
+          userMessage: msg,
+          availableSubjects: subjects,
+        })
+      );
     }
 
     if (ai.intent === 'subjects') {
       if (!subjects.length) {
         await message.react('❌');
-        return message.reply(await chatReply({
-          reason: 'no_subjects',
-          userMessage: msg,
-          availableSubjects: subjects,
-        }));
+        return message.reply(
+          await chatReply({
+            reason: 'no_subjects',
+            userMessage: msg,
+            availableSubjects: subjects,
+          })
+        );
       }
 
       await message.react('✅');
@@ -374,24 +327,28 @@ client.on('message', async (message) => {
 
       if (!subject || !subjects.includes(subject)) {
         await message.react('❌');
-        return message.reply(await chatReply({
-          reason: 'subject_not_found',
-          userMessage: msg,
-          subject,
-          availableSubjects: subjects,
-        }));
+        return message.reply(
+          await chatReply({
+            reason: 'subject_not_found',
+            userMessage: msg,
+            subject,
+            availableSubjects: subjects,
+          })
+        );
       }
 
       const files = await getFiles(subject);
 
       if (!files.length) {
         await message.react('❌');
-        return message.reply(await chatReply({
-          reason: 'bucket_empty',
-          userMessage: msg,
-          subject,
-          availableSubjects: subjects,
-        }));
+        return message.reply(
+          await chatReply({
+            reason: 'bucket_empty',
+            userMessage: msg,
+            subject,
+            availableSubjects: subjects,
+          })
+        );
       }
 
       let text = `📚 *${subject.toUpperCase()} FILES*\n\n`;
@@ -413,35 +370,41 @@ client.on('message', async (message) => {
 
       if (!result) {
         await message.react('❌');
-        return message.reply(await chatReply({
-          reason: 'file_not_found',
-          userMessage: msg,
-          subject: ai.subject,
-          availableSubjects: subjects,
-        }));
+        return message.reply(
+          await chatReply({
+            reason: 'file_not_found',
+            userMessage: msg,
+            subject: ai.subject,
+            availableSubjects: subjects,
+          })
+        );
       }
 
       const filesInBucket = await getFiles(result.subject);
 
       if (!filesInBucket.length) {
         await message.react('❌');
-        return message.reply(await chatReply({
-          reason: 'bucket_empty',
-          userMessage: msg,
-          subject: result.subject,
-          availableSubjects: subjects,
-        }));
+        return message.reply(
+          await chatReply({
+            reason: 'bucket_empty',
+            userMessage: msg,
+            subject: result.subject,
+            availableSubjects: subjects,
+          })
+        );
       }
 
       return sendPdf(message, result);
     }
 
     await message.react('✅');
-    return message.reply(await chatReply({
-      reason: 'chat',
-      userMessage: msg,
-      availableSubjects: subjects,
-    }));
+    return message.reply(
+      await chatReply({
+        reason: 'chat',
+        userMessage: msg,
+        availableSubjects: subjects,
+      })
+    );
   } catch (err) {
     console.error(err);
     try {
@@ -451,4 +414,9 @@ client.on('message', async (message) => {
   }
 });
 
-client.initialize();
+// Delay initialize for Render cold start
+setTimeout(() => {
+  client.initialize().catch((err) => {
+    console.error('❌ Client initialize failed:', err);
+  });
+}, 8000);
