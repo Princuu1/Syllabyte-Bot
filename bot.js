@@ -14,11 +14,9 @@ let lastQR = null;
 
 app.get('/', (req, res) => res.send('✅ Syllabyte bot is running!'));
 
-// Password protected QR page
 app.get('/qr', (req, res) => {
   const { pass } = req.query;
 
-  // No password = show login form
   if (!pass) {
     return res.send(`
       <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
@@ -41,7 +39,6 @@ app.get('/qr', (req, res) => {
     `);
   }
 
-  // Wrong password
   if (pass !== process.env.QR_PASSWORD) {
     return res.status(401).send(`
       <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
@@ -51,7 +48,6 @@ app.get('/qr', (req, res) => {
     `);
   }
 
-  // Correct password but no QR (already connected)
   if (!lastQR) {
     return res.send(`
       <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
@@ -63,7 +59,6 @@ app.get('/qr', (req, res) => {
     `);
   }
 
-  // Show QR image
   QRCode.toDataURL(lastQR).then(qrImage => {
     res.send(`
       <html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff">
@@ -71,7 +66,7 @@ app.get('/qr', (req, res) => {
         <p style="color:#aaa">WhatsApp → Linked Devices → Link a Device</p>
         <img src="${qrImage}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block" />
         <p style="color:#ff9900">⚠️ QR expires in ~20 seconds</p>
-        <a href="/qr?pass=${pass}" 
+        <a href="/qr?pass=${pass}"
            style="display:inline-block;margin-top:10px;padding:10px 25px;background:#25D366;color:white;border-radius:8px;text-decoration:none">
           🔄 Refresh QR
         </a>
@@ -94,38 +89,42 @@ const ALLOWED = (process.env.ALLOWED_CHAT_IDS || '')
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-// ── Puppeteer config ───────────────────────────────────────────────
-const puppeteer = require('puppeteer');
+// ── Chrome path — from your logs we know exact path ───────────────
+const isRender = !!process.env.RENDER;
+const CHROME_PATH = '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
 
-const getExecutablePath = () => {
-  if (isRender) {
-    // dynamically find whatever chrome version is installed
-    const { execSync } = require('child_process');
-    try {
-      const path = execSync('find /opt/render/.cache/puppeteer -name "chrome" -type f')
-        .toString()
-        .trim()
-        .split('\n')[0];
-      console.log('🔍 Found Chrome at:', path);
-      return path;
-    } catch (e) {
-      console.error('❌ Could not find Chrome:', e);
-      return undefined;
-    }
-  }
-  return undefined;
-};
+console.log(`🖥️ Running on: ${isRender ? 'Render' : 'Local'}`);
+if (isRender) console.log(`🔍 Using Chrome at: ${CHROME_PATH}`);
+
+// ── WhatsApp Client ────────────────────────────────────────────────
+const client = new Client({
+  authStrategy: new LocalAuth({
+    dataPath: isRender ? '/tmp/.wwebjs_auth' : './.wwebjs_auth',
+  }),
+  puppeteer: {
+    headless: true,
+    executablePath: isRender ? CHROME_PATH : undefined,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+    ],
+  },
+});
 // ───────────────────────────────────────────────────────────────────
 
 client.on('qr', (qr) => {
-  lastQR = qr; // store for /qr page
+  lastQR = qr;
   console.log('📱 New QR received — visit /qr page to scan');
-  // also print terminal QR as fallback
   qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
-  lastQR = null; // clear QR once connected
+  lastQR = null;
   console.log('✅ Bot Ready');
 });
 
