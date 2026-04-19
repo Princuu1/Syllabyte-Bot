@@ -95,29 +95,26 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ── Puppeteer config ───────────────────────────────────────────────
-const isRender = !!process.env.RENDER;
+const puppeteer = require('puppeteer');
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: isRender ? '/tmp/.wwebjs_auth' : './.wwebjs_auth',
-  }),
-  puppeteer: {
-    headless: true,
-    executablePath: isRender
-      ? '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome'
-      : undefined,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu',
-    ],
-  },
-});
+const getExecutablePath = () => {
+  if (isRender) {
+    // dynamically find whatever chrome version is installed
+    const { execSync } = require('child_process');
+    try {
+      const path = execSync('find /opt/render/.cache/puppeteer -name "chrome" -type f')
+        .toString()
+        .trim()
+        .split('\n')[0];
+      console.log('🔍 Found Chrome at:', path);
+      return path;
+    } catch (e) {
+      console.error('❌ Could not find Chrome:', e);
+      return undefined;
+    }
+  }
+  return undefined;
+};
 // ───────────────────────────────────────────────────────────────────
 
 client.on('qr', (qr) => {
