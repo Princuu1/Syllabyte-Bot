@@ -25,7 +25,6 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ── Puppeteer args for Linux (required on Render) ──────────────────
-const puppeteer = require('puppeteer');
 const isRender = !!process.env.RENDER;
 
 const client = new Client({
@@ -34,7 +33,9 @@ const client = new Client({
   }),
   puppeteer: {
     headless: true,
-    executablePath: puppeteer.executablePath(), // 👈 key fix
+    executablePath: isRender
+      ? '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome'
+      : undefined, // local: puppeteer finds it automatically
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -42,11 +43,11 @@ const client = new Client({
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      ...(isRender ? ['--single-process'] : []),
+      '--single-process',
       '--disable-gpu',
     ],
   },
-});
+});;
 // ───────────────────────────────────────────────────────────────────
 
 client.on('qr', qr => {
